@@ -1,0 +1,1163 @@
+SMART TRAFFIC CONTROL SYSTEM - CODE DOCUMENTATION
+=========================================================
+
+This file contains essential code snippets and examples for your project documentation.
+Copy and paste these sections into your documentation as needed.
+
+=========================================================
+1. SYSTEM ARCHITECTURE CODE
+=========================================================
+
+# Main Application Structure
+# coordinated_traffic_app.py
+
+from flask import Flask, render_template, request, jsonify
+import threading
+import time
+import cv2
+import base64
+import os
+from vehicle_detector import VehicleDetector
+from traffic_optimizer import TrafficOptimizer
+
+app = Flask(__name__)
+
+# System Configuration
+UPLOAD_FOLDER = 'uploads'
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB
+
+# Lane System Configuration
+lanes_system = {
+    'north': {
+        'video_path': None,
+        'cap': None,
+        'detector': None,
+        'current_frame': None,
+        'frame_count': 0,
+        'vehicle_count': 0,
+        'traffic_density': 'Low',
+        'signal_state': 'red',
+        'is_active': False,
+        'is_running': False,
+        'analyzed': False,
+        'traffic_score': 0.0,
+        'video_length': 0.0
+    },
+    'east': { ... same structure ... },
+    'south': { ... same structure ... },
+    'west': { ... same structure ... }
+}
+
+# Traffic Coordinator
+coordinator = {
+    'active_lane': None,
+    'green_timer': 0,
+    'cycle_count': 0,
+    'ml_enabled': True,
+    'ml_accuracy': 0.85,
+    'analysis_phase': True,
+    'all_analyzed': False,
+    'rotation_mode': False
+}
+
+# System Lock for Thread Safety
+system_lock = threading.Lock()
+traffic_optimizer = TrafficOptimizer()
+
+=========================================================
+2. VEHICLE DETECTION CODE
+=========================================================
+
+# vehicle_detector.py
+
+import cv2
+import torch
+from ultralytics import YOLO
+
+class VehicleDetector:
+    def __init__(self, model_path='yolov8n.pt'):
+        """Initialize YOLO-based vehicle detector"""
+        self.model = YOLO(model_path)
+        self.vehicle_classes = {
+            2: 'car',
+            3: 'motorcycle', 
+            5: 'bus',
+            7: 'truck'
+        }
+        self.confidence_threshold = 0.5
+        
+        print(f"✅ Vehicle Detector initialized with {model_path}")
+    
+    def detect_vehicles(self, frame):
+        """Detect vehicles in a frame"""
+        results = self.model(frame, conf=self.confidence_threshold)
+        detections = []
+        
+        for result in results:
+            boxes = result.boxes
+            for box in boxes:
+                cls = int(box.cls)
+                if cls in self.vehicle_classes:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    conf = float(box.conf)
+                    label = self.vehicle_classes[cls]
+                    
+                    detections.append({
+                        'bbox': (x1, y1, x2, y2),
+                        'confidence': conf,
+                        'label': label
+                    })
+        
+        return detections
+    
+    def draw_detections(self, frame, detections):
+        """Draw bounding boxes and labels on frame"""
+        for detection in detections:
+            x1, y1, x2, y2 = detection['bbox']
+            label = detection['label']
+            confidence = detection['confidence']
+            
+            # Draw bounding box
+            color = (0, 255, 0) if label == 'car' else (0, 0, 255)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            
+            # Draw label
+            label_text = f"{label}: {confidence:.2f}"
+            cv2.putText(frame, label_text, (x1, y1-10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        
+        return frame
+
+=========================================================
+3. TRAFFIC OPTIMIZATION CODE
+=========================================================
+
+# traffic_optimizer.py
+
+import numpy as np
+import pickle
+from datetime import datetime
+from collections import deque
+
+class TrafficOptimizer:
+    def __init__(self):
+        """Initialize ML-based traffic optimizer"""
+        self.model = None
+        self.traffic_history = deque(maxlen=1000)
+        self.learning_cycles = 0
+        self.load_model()
+        
+    def load_model(self):
+        """Load or create traffic optimization model"""
+        try:
+            with open('traffic_model.pkl', 'rb') as f:
+                self.model = pickle.load(f)
+            print("✅ ML Model loaded successfully")
+        except:
+            print("🔄 Creating new ML model...")
+            self.create_model()
+    
+    def create_model(self):
+        """Create simple rule-based optimizer"""
+        self.model = {
+            'base_green_time': 8,
+            'max_green_time': 30,
+            'min_green_time': 5,
+            'traffic_weight': 0.7,
+            'time_weight': 0.3
+        }
+        self.save_model()
+    
+    def calculate_optimal_green_time(self, vehicle_count, video_length, lane_priority):
+        """Calculate optimal green time based on traffic data"""
+        if not self.model:
+            return 8.0  # Default time
+        
+        base_time = self.model['base_green_time']
+        traffic_factor = min(vehicle_count / 20.0, 2.0)  # Normalize to 0-2
+        time_factor = min(video_length / 30.0, 1.5)     # Normalize to 0-1.5
+        
+        # Weighted calculation
+        optimal_time = base_time * (
+            1 + (traffic_factor * self.model['traffic_weight']) +
+            (time_factor * self.model['time_weight'])
+        )
+        
+        # Clamp to reasonable bounds
+        optimal_time = max(self.model['min_green_time'], 
+                          min(optimal_time, self.model['max_green_time']))
+        
+        return round(optimal_time, 1)
+    
+    def record_traffic_data(self, lane_data):
+        """Record traffic data for learning"""
+        self.traffic_history.append({
+            'timestamp': datetime.now(),
+            'lane_id': lane_data['lane_id'],
+            'vehicle_count': lane_data['vehicle_count'],
+            'green_time': lane_data['green_time'],
+            'efficiency': lane_data.get('efficiency', 0.5)
+        })
+        
+        # Periodic model update
+        if len(self.traffic_history) % 50 == 0:
+            self.update_model()
+    
+    def update_model(self):
+        """Update model based on collected data"""
+        if len(self.traffic_history) < 10:
+            return
+        
+        # Simple learning: adjust base time based on efficiency
+        recent_data = list(self.traffic_history)[-20:]
+        avg_efficiency = np.mean([d['efficiency'] for d in recent_data])
+        
+        if avg_efficiency < 0.4:  # Low efficiency
+            self.model['base_green_time'] = min(
+                self.model['base_green_time'] + 1, 
+                self.model['max_green_time']
+            )
+        elif avg_efficiency > 0.8:  # High efficiency
+            self.model['base_green_time'] = max(
+                self.model['base_green_time'] - 1,
+                self.model['min_green_time']
+            )
+        
+        self.learning_cycles += 1
+        self.save_model()
+        print(f"🤖 Model updated - Cycle {self.learning_cycles}")
+    
+    def save_model(self):
+        """Save model to file"""
+        with open('traffic_model.pkl', 'wb') as f:
+            pickle.dump(self.model, f)
+
+=========================================================
+4. VIDEO PROCESSING CODE
+=========================================================
+
+# Video Analysis Function
+
+def analyze_video_traffic(lane_name, video_path):
+    """Analyze traffic in uploaded video"""
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            print(f"❌ Error opening video: {video_path}")
+            return
+        
+        detector = VehicleDetector()
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        duration = total_frames / fps if fps > 0 else 0
+        
+        vehicle_counts = []
+        frame_sample_rate = max(1, total_frames // 100)  # Sample 100 frames
+        
+        frame_num = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            if frame_num % frame_sample_rate == 0:
+                detections = detector.detect_vehicles(frame)
+                vehicle_count = len(detections)
+                vehicle_counts.append(vehicle_count)
+            
+            frame_num += 1
+        
+        cap.release()
+        
+        # Calculate traffic metrics
+        avg_vehicles = np.mean(vehicle_counts) if vehicle_counts else 0
+        max_vehicles = max(vehicle_counts) if vehicle_counts else 0
+        traffic_score = min((avg_vehicles / 10.0) * 100, 100)  # Score 0-100
+        
+        # Determine congestion level
+        if avg_vehicles < 3:
+            congestion = 'Low'
+        elif avg_vehicles < 8:
+            congestion = 'Medium'
+        elif avg_vehicles < 15:
+            congestion = 'High'
+        else:
+            congestion = 'Critical'
+        
+        # Update lane data
+        with system_lock:
+            lanes_system[lane_name].update({
+                'vehicle_count': int(avg_vehicles),
+                'traffic_density': congestion,
+                'analyzed': True,
+                'traffic_score': traffic_score,
+                'video_length': duration,
+                'total_frames': total_frames,
+                'fps': fps
+            })
+        
+        print(f"🔍 {lane_name.upper()} Analysis Complete:")
+        print(f"   📊 Avg Vehicles: {avg_vehicles:.1f}")
+        print(f"   🎯 Traffic Score: {traffic_score:.1f}")
+        print(f"   🕐 Duration: {duration:.1f}s")
+        print(f"   🚦 Congestion: {congestion}")
+        
+    except Exception as e:
+        print(f"❌ Error analyzing {lane_name}: {str(e)}")
+
+=========================================================
+5. TRAFFIC COORDINATION CODE
+=========================================================
+
+# Traffic Coordination Logic
+
+def traffic_coordinator():
+    """Main traffic coordination loop"""
+    while coordinator['is_running']:
+        with system_lock:
+            if coordinator['analysis_phase']:
+                # Check if all videos are analyzed
+                all_analyzed = all(lane['analyzed'] for lane in lanes_system.values())
+                
+                if all_analyzed and not coordinator['all_analyzed']:
+                    coordinator['all_analyzed'] = True
+                    coordinator['analysis_phase'] = False
+                    coordinator['rotation_mode'] = True
+                    start_systematic_rotation()
+                    
+            elif coordinator['rotation_mode']:
+                # Handle green timer countdown
+                if coordinator['green_timer'] > 0:
+                    coordinator['green_timer'] -= 0.1
+                else:
+                    # Time to switch lanes
+                    rotate_to_next_lane()
+        
+        time.sleep(0.1)  # 100ms update interval
+
+def start_systematic_rotation():
+    """Start systematic lane rotation based on traffic scores"""
+    # Sort lanes by traffic score (highest first)
+    lane_scores = [
+        (lane_name, lane_data['traffic_score'])
+        for lane_name, lane_data in lanes_system.items()
+        if lane_data['analyzed']
+    ]
+    lane_scores.sort(key=lambda x: x[1], reverse=True)
+    
+    coordinator['rotation_order'] = [lane[0] for lane in lane_scores]
+    coordinator['rotation_index'] = 0
+    
+    print("🎯 Traffic Priority Order:")
+    for i, (lane, score) in enumerate(lane_scores):
+        print(f"   {i+1}. {lane.upper()}: {score:.1f}")
+    
+    # Activate first lane
+    if coordinator['rotation_order']:
+        first_lane = coordinator['rotation_order'][0]
+        activate_lane_with_timing(first_lane)
+
+def rotate_to_next_lane():
+    """Rotate to next lane in priority order"""
+    if not coordinator['rotation_order']:
+        return
+    
+    # Deactivate current lane
+    current_lane = coordinator['active_lane']
+    if current_lane:
+        lanes_system[current_lane]['is_active'] = False
+        lanes_system[current_lane]['signal_state'] = 'red'
+        print(f"🔴 Deactivating {current_lane} lane")
+    
+    # Move to next lane
+    coordinator['rotation_index'] = (
+        coordinator['rotation_index'] + 1
+    ) % len(coordinator['rotation_order'])
+    
+    next_lane = coordinator['rotation_order'][coordinator['rotation_index']]
+    activate_lane_with_timing(next_lane)
+
+def activate_lane_with_timing(lane_name):
+    """Activate a lane with calculated timing"""
+    if not lanes_system[lane_name]['analyzed']:
+        return
+    
+    # Calculate optimal green time
+    vehicle_count = lanes_system[lane_name]['vehicle_count']
+    video_length = lanes_system[lane_name]['video_length']
+    lane_priority = coordinator['rotation_index']
+    
+    if coordinator['ml_enabled']:
+        green_time = traffic_optimizer.calculate_optimal_green_time(
+            vehicle_count, video_length, lane_priority
+        )
+    else:
+        green_time = 8.0  # Default time
+    
+    # Activate lane
+    lanes_system[lane_name]['is_active'] = True
+    lanes_system[lane_name]['signal_state'] = 'green'
+    coordinator['active_lane'] = lane_name
+    coordinator['green_timer'] = green_time
+    coordinator['cycle_count'] += 1
+    
+    print(f"🟢 Activating {lane_name} lane")
+    print(f"⏱️ {lane_name} green time: {green_time}s (Traffic: {vehicle_count}, Video: {video_length:.1f}s)")
+
+=========================================================
+6. WEB API ENDPOINTS CODE
+=========================================================
+
+# Flask Routes
+
+@app.route('/')
+def index():
+    """Main dashboard page"""
+    return render_template('coordinated_index_standard.html')
+
+@app.route('/upload_coordinated_video', methods=['POST'])
+def upload_coordinated_video():
+    """Handle video upload for a lane"""
+    try:
+        if 'video' not in request.files:
+            return jsonify({'success': False, 'message': 'No video file'})
+        
+        file = request.files['video']
+        lane = request.form.get('lane', 'north')
+        
+        if file.filename == '':
+            return jsonify({'success': False, 'message': 'No file selected'})
+        
+        # Save video
+        filename = f"{lane}_{int(time.time())}_{file.filename}"
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+        
+        # Update lane configuration
+        with system_lock:
+            lanes_system[lane]['video_path'] = filepath
+            lanes_system[lane]['analyzed'] = False
+            lanes_system[lane]['traffic_score'] = 0.0
+            
+            # Reset coordinator state
+            coordinator['analysis_phase'] = True
+            coordinator['all_analyzed'] = False
+            coordinator['rotation_mode'] = False
+            coordinator['active_lane'] = None
+            coordinator['cycle_count'] = 0
+            coordinator['green_timer'] = 0
+        
+        # Start analysis in background
+        analysis_thread = threading.Thread(
+            target=analyze_video_traffic, 
+            args=(lane, filepath)
+        )
+        analysis_thread.start()
+        
+        return jsonify({
+            'success': True, 
+            'filename': filename,
+            'lane': lane
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+@app.route('/start_coordinated_analysis', methods=['POST'])
+def start_coordinated_analysis():
+    """Start traffic analysis and coordination"""
+    try:
+        with system_lock:
+            # Check if all lanes have videos
+            lanes_with_videos = [
+                lane for lane, data in lanes_system.items()
+                if data['video_path'] and data['analyzed']
+            ]
+            
+            if len(lanes_with_videos) < 2:
+                return jsonify({
+                    'success': False, 
+                    'message': 'Need at least 2 lanes with analyzed videos'
+                })
+            
+            # Initialize video captures and detectors
+            for lane_name in lanes_with_videos:
+                lane_data = lanes_system[lane_name]
+                
+                # Initialize video capture
+                if not lane_data['cap'] or not lane_data['cap'].isOpened():
+                    lane_data['cap'] = cv2.VideoCapture(lane_data['video_path'])
+                    lane_data['detector'] = VehicleDetector()
+                
+                lane_data['is_running'] = True
+                lane_data['frame_count'] = 0
+            
+            # Start coordinator
+            coordinator['is_running'] = True
+            coordinator_thread = threading.Thread(target=traffic_coordinator)
+            coordinator_thread.daemon = True
+            coordinator_thread.start()
+            
+            # Start processing threads for each lane
+            for lane_name in lanes_with_videos:
+                processing_thread = threading.Thread(
+                    target=process_lane_video_coordinated,
+                    args=(lane_name,)
+                )
+                processing_thread.daemon = True
+                processing_thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Traffic coordination started',
+            'active_lanes': lanes_with_videos
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+@app.route('/get_coordinated_frames')
+def get_coordinated_frames():
+    """Get current frames from coordinated system"""
+    try:
+        with system_lock:
+            response_data = {
+                'success': True,
+                'lanes': {},
+                'coordinator': {
+                    'active_lane': coordinator['active_lane'],
+                    'green_timer': coordinator['green_timer'],
+                    'cycle_count': coordinator['cycle_count'],
+                    'ml_enabled': coordinator['ml_enabled'],
+                    'ml_accuracy': coordinator['ml_accuracy'],
+                    'analysis_phase': coordinator['analysis_phase'],
+                    'rotation_mode': coordinator['rotation_mode'],
+                    'all_analyzed': coordinator['all_analyzed']
+                }
+            }
+            
+            for lane_name, lane_data in lanes_system.items():
+                lane_info = {
+                    'frame_count': lane_data['frame_count'],
+                    'vehicle_count': lane_data['vehicle_count'],
+                    'traffic_density': lane_data['traffic_density'],
+                    'signal_state': lane_data['signal_state'],
+                    'is_active': lane_data['is_active'],
+                    'is_running': lane_data['is_running'],
+                    'analyzed': lane_data['analyzed'],
+                    'traffic_score': lane_data['traffic_score'],
+                    'video_length': lane_data['video_length']
+                }
+                
+                # Add frame if available
+                if lane_data['current_frame'] is not None:
+                    frame_rgb = cv2.cvtColor(lane_data['current_frame'], cv2.COLOR_BGR2RGB)
+                    
+                    # Add overlays
+                    if coordinator['rotation_mode'] and not lane_data['is_active']:
+                        # Waiting overlay
+                        h, w = frame_rgb.shape[:2]
+                        overlay = frame_rgb.copy()
+                        cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
+                        frame_rgb = cv2.addWeighted(overlay, 0.6, frame_rgb, 0.4, 0)
+                        
+                        cv2.putText(frame_rgb, "WAITING", (w//2 - 60, h//2), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 0), 3)
+                    
+                    _, buffer = cv2.imencode('.jpg', frame_rgb)
+                    frame_b64 = base64.b64encode(buffer).decode('utf-8')
+                    lane_info['frame'] = frame_b64
+                
+                response_data['lanes'][lane_name] = lane_info
+            
+            return jsonify(response_data)
+            
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+=========================================================
+7. FRONTEND JAVASCRIPT CODE
+=========================================================
+
+// Dashboard JavaScript
+
+class TrafficDashboard {
+    constructor() {
+        this.updateInterval = null;
+        this.canvasElements = {};
+        this.initializeCanvas();
+    }
+    
+    initializeCanvas() {
+        // Initialize canvas elements for each lane
+        const lanes = ['north', 'east', 'south', 'west'];
+        lanes.forEach(lane => {
+            const canvas = document.getElementById(`${lane}-lane`);
+            if (canvas) {
+                this.canvasElements[lane] = {
+                    canvas: canvas,
+                    ctx: canvas.getContext('2d')
+                };
+            }
+        });
+    }
+    
+    startUpdates() {
+        // Start real-time updates
+        this.updateInterval = setInterval(async () => {
+            try {
+                const response = await fetch('/get_coordinated_frames');
+                const data = await response.json();
+                
+                if (data.success) {
+                    this.updateDisplay(data);
+                    this.updateCoordinatorInfo(data.coordinator);
+                }
+            } catch (error) {
+                console.error('Error updating display:', error);
+            }
+        }, 100); // Update every 100ms
+    }
+    
+    updateDisplay(data) {
+        // Update video frames
+        Object.keys(data.lanes).forEach(laneName => {
+            const laneData = data.lanes[laneName];
+            const canvasElement = this.canvasElements[laneName];
+            
+            if (canvasElement && laneData.frame) {
+                const img = new Image();
+                img.onload = () => {
+                    const ctx = canvasElement.ctx;
+                    const canvas = canvasElement.canvas;
+                    
+                    // Clear and draw frame
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    
+                    // Draw overlay information
+                    this.drawLaneOverlay(ctx, laneData, canvas);
+                };
+                img.src = `data:image/jpeg;base64,${laneData.frame}`;
+            }
+            
+            // Update lane information
+            this.updateLaneInfo(laneName, laneData);
+        });
+    }
+    
+    drawLaneOverlay(ctx, laneData, canvas) {
+        // Signal indicator
+        const signalColor = laneData.signal_state === 'green' ? '#4CAF50' : '#f44336';
+        ctx.fillStyle = signalColor;
+        ctx.beginPath();
+        ctx.arc(50, 50, 20, 0, 2 * Math.PI);
+        ctx.fill();
+        
+        // Text information
+        ctx.fillStyle = 'white';
+        ctx.strokeStyle = 'black';
+        ctx.lineWidth = 3;
+        ctx.font = 'bold 16px Arial';
+        
+        const texts = [
+            `Vehicles: ${laneData.vehicle_count}`,
+            `Density: ${laneData.traffic_density}`,
+            `Score: ${laneData.traffic_score?.toFixed(1) || '0.0'}`
+        ];
+        
+        texts.forEach((text, index) => {
+            const y = 100 + (index * 25);
+            ctx.strokeText(text, 10, y);
+            ctx.fillText(text, 10, y);
+        });
+        
+        // Status indicator
+        if (laneData.is_active) {
+            ctx.fillStyle = '#4CAF50';
+            ctx.font = 'bold 20px Arial';
+            ctx.strokeText('🟢 ACTIVE', canvas.width/2 - 60, 30);
+            ctx.fillText('🟢 ACTIVE', canvas.width/2 - 60, 30);
+        }
+    }
+    
+    updateCoordinatorInfo(coordinator) {
+        // Update coordinator display
+        const elements = {
+            'active-lane': coordinator.active_lane?.toUpperCase() || 'None',
+            'green-timer': coordinator.green_timer?.toFixed(1) || '0.0',
+            'cycle-count': coordinator.cycle_count || 0,
+            'ml-status': coordinator.ml_enabled ? '🟢 Enabled' : '🔴 Disabled',
+            'ml-accuracy': `${(coordinator.ml_accuracy * 100).toFixed(1)}%`
+        };
+        
+        Object.keys(elements).forEach(id => {
+            const element = document.getElementById(id);
+            if (element) {
+                element.textContent = elements[id];
+            }
+        });
+        
+        // Update system status
+        const statusElement = document.getElementById('system-status');
+        if (statusElement) {
+            if (coordinator.analysis_phase) {
+                statusElement.textContent = '🔍 Analyzing Traffic...';
+                statusElement.className = 'status-analyzing';
+            } else if (coordinator.rotation_mode) {
+                statusElement.textContent = '🔄 Coordinating Traffic';
+                statusElement.className = 'status-coordinating';
+            } else {
+                statusElement.textContent = '⏸️ Ready';
+                statusElement.className = 'status-ready';
+            }
+        }
+    }
+    
+    updateLaneInfo(laneName, laneData) {
+        // Update lane information panels
+        const elements = {
+            `${laneName}-vehicles`: laneData.vehicle_count || 0,
+            `${laneName}-density`: laneData.traffic_density || 'Unknown',
+            `${laneName}-score`: laneData.traffic_score?.toFixed(1) || '0.0',
+            `${laneName}-status`: laneData.signal_state?.toUpperCase() || 'UNKNOWN'
+        };
+        
+        Object.keys(elements).forEach(id => {
+            const element = document.getElementById(id);
+            if (element) {
+                element.textContent = elements[id];
+            }
+        });
+    }
+    
+    stopUpdates() {
+        if (this.updateInterval) {
+            clearInterval(this.updateInterval);
+            this.updateInterval = null;
+        }
+    }
+}
+
+// Initialize dashboard when page loads
+document.addEventListener('DOMContentLoaded', function() {
+    window.dashboard = new TrafficDashboard();
+    
+    // Auto-start updates
+    window.dashboard.startUpdates();
+    
+    // Handle file uploads
+    const fileInputs = document.querySelectorAll('input[type="file"]');
+    fileInputs.forEach(input => {
+        input.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            const lane = e.target.dataset.lane;
+            
+            if (file) {
+                uploadVideo(file, lane);
+            }
+        });
+    });
+});
+
+// Video upload function
+async function uploadVideo(file, lane) {
+    const formData = new FormData();
+    formData.append('video', file);
+    formData.append('lane', lane);
+    
+    try {
+        const response = await fetch('/upload_coordinated_video', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            console.log(`✅ ${lane} video uploaded successfully`);
+            // Update UI to show upload status
+            updateUploadStatus(lane, 'uploaded');
+        } else {
+            console.error(`❌ Upload failed: ${result.message}`);
+            updateUploadStatus(lane, 'error');
+        }
+    } catch (error) {
+        console.error('Upload error:', error);
+        updateUploadStatus(lane, 'error');
+    }
+}
+
+// System control functions
+async function startSystem() {
+    try {
+        const response = await fetch('/start_coordinated_analysis', {
+            method: 'POST'
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            console.log('✅ System started successfully');
+            updateSystemStatus('running');
+        } else {
+            console.error(`❌ Start failed: ${result.message}`);
+        }
+    } catch (error) {
+        console.error('Start error:', error);
+    }
+}
+
+async function stopSystem() {
+    try {
+        const response = await fetch('/stop_coordinated_analysis', {
+            method: 'POST'
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            console.log('✅ System stopped successfully');
+            updateSystemStatus('stopped');
+        } else {
+            console.error(`❌ Stop failed: ${result.message}`);
+        }
+    } catch (error) {
+        console.error('Stop error:', error);
+    }
+}
+
+async function resetSystem() {
+    try {
+        const response = await fetch('/reset_coordinated_analysis', {
+            method: 'POST'
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            console.log('✅ System reset successfully');
+            updateSystemStatus('ready');
+            location.reload(); // Refresh page
+        } else {
+            console.error(`❌ Reset failed: ${result.message}`);
+        }
+    } catch (error) {
+        console.error('Reset error:', error);
+    }
+}
+
+// UI update functions
+function updateUploadStatus(lane, status) {
+    const statusElement = document.getElementById(`${lane}-upload-status`);
+    if (statusElement) {
+        const statusMap = {
+            'uploading': '📤 Uploading...',
+            'uploaded': '✅ Uploaded',
+            'analyzing': '🔍 Analyzing...',
+            'error': '❌ Error'
+        };
+        
+        statusElement.textContent = statusMap[status] || status;
+        statusElement.className = `upload-status ${status}`;
+    }
+}
+
+function updateSystemStatus(status) {
+    const statusElement = document.getElementById('system-status');
+    if (statusElement) {
+        const statusMap = {
+            'ready': '⏸️ Ready',
+            'running': '🟢 Running',
+            'stopped': '🔴 Stopped'
+        };
+        
+        statusElement.textContent = statusMap[status] || status;
+        statusElement.className = `system-status ${status}`;
+    }
+}
+
+=========================================================
+8. CONFIGURATION CODE
+=========================================================
+
+# System Configuration
+
+# config.py
+import os
+
+class Config:
+    # Flask Configuration
+    SECRET_KEY = os.environ.get('SECRET_KEY') or 'your-secret-key-here'
+    DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
+    
+    # Upload Configuration
+    UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER', 'uploads')
+    MAX_CONTENT_LENGTH = int(os.environ.get('MAX_CONTENT_LENGTH', 500 * 1024 * 1024))
+    ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov', 'mkv'}
+    
+    # Database Configuration
+    DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///traffic_system.db')
+    
+    # ML Configuration
+    ML_MODEL_PATH = os.environ.get('ML_MODEL_PATH', 'traffic_model.pkl')
+    YOLO_MODEL_PATH = os.environ.get('YOLO_MODEL_PATH', 'yolov8n.pt')
+    CONFIDENCE_THRESHOLD = float(os.environ.get('CONFIDENCE_THRESHOLD', 0.5))
+    
+    # Performance Configuration
+    PROCESSING_INTERVAL = float(os.environ.get('PROCESSING_INTERVAL', 0.1))
+    FRAME_BUFFER_SIZE = int(os.environ.get('FRAME_BUFFER_SIZE', 100))
+    MAX_WORKERS = int(os.environ.get('MAX_WORKERS', 4))
+    
+    # Traffic Control Configuration
+    MIN_GREEN_TIME = int(os.environ.get('MIN_GREEN_TIME', 5))
+    MAX_GREEN_TIME = int(os.environ.get('MAX_GREEN_TIME', 30))
+    DEFAULT_GREEN_TIME = int(os.environ.get('DEFAULT_GREEN_TIME', 8))
+
+# requirements.txt
+Flask==2.3.3
+Flask-SocketIO==5.3.6
+opencv-python==4.8.1
+torch==2.0.1
+torchvision==0.15.2
+ultralytics==8.0.196
+numpy==1.24.3
+pandas==1.5.3
+scikit-learn==1.3.0
+Pillow==10.0.1
+Werkzeug==2.3.7
+
+=========================================================
+9. ERROR HANDLING CODE
+=========================================================
+
+# Error Handling and Logging
+
+import logging
+from datetime import datetime
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('traffic_system.log'),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+class TrafficSystemError(Exception):
+    """Custom exception for traffic system errors"""
+    pass
+
+class VideoProcessingError(TrafficSystemError):
+    """Exception for video processing errors"""
+    pass
+
+class ModelLoadingError(TrafficSystemError):
+    """Exception for model loading errors"""
+    pass
+
+def handle_video_processing_error(lane_name, error):
+    """Handle video processing errors"""
+    logger.error(f"Video processing error in {lane_name}: {str(error)}")
+    
+    with system_lock:
+        lanes_system[lane_name]['is_running'] = False
+        lanes_system[lane_name]['signal_state'] = 'red'
+        lanes_system[lane_name]['is_active'] = False
+    
+    # Try to recover
+    try:
+        recover_lane_processing(lane_name)
+    except Exception as recovery_error:
+        logger.error(f"Recovery failed for {lane_name}: {str(recovery_error)}")
+
+def recover_lane_processing(lane_name):
+    """Attempt to recover lane processing"""
+    logger.info(f"Attempting to recover {lane_name} processing...")
+    
+    # Reset video capture
+    lane_data = lanes_system[lane_name]
+    if lane_data['cap']:
+        lane_data['cap'].release()
+    
+    # Reinitialize
+    if lane_data['video_path']:
+        lane_data['cap'] = cv2.VideoCapture(lane_data['video_path'])
+        if lane_data['cap'].isOpened():
+            lane_data['is_running'] = True
+            logger.info(f"✅ {lane_name} processing recovered")
+        else:
+            raise VideoProcessingError(f"Failed to recover {lane_name} video capture")
+
+def log_system_performance():
+    """Log system performance metrics"""
+    try:
+        import psutil
+        
+        cpu_percent = psutil.cpu_percent()
+        memory_percent = psutil.virtual_memory().percent
+        
+        logger.info(f"Performance - CPU: {cpu_percent}%, Memory: {memory_percent}%")
+        
+        # Log traffic metrics
+        with system_lock:
+            total_vehicles = sum(lane['vehicle_count'] for lane in lanes_system.values())
+            active_lanes = sum(1 for lane in lanes_system.values() if lane['is_active'])
+            
+            logger.info(f"Traffic - Total Vehicles: {total_vehicles}, Active Lanes: {active_lanes}")
+            
+    except ImportError:
+        logger.warning("psutil not available for performance monitoring")
+
+=========================================================
+10. TESTING CODE
+=========================================================
+
+# Unit Tests
+
+import unittest
+import cv2
+import numpy as np
+from vehicle_detector import VehicleDetector
+from traffic_optimizer import TrafficOptimizer
+
+class TestVehicleDetector(unittest.TestCase):
+    def setUp(self):
+        self.detector = VehicleDetector()
+    
+    def test_detector_initialization(self):
+        """Test detector initialization"""
+        self.assertIsNotNone(self.detector.model)
+        self.assertIn('car', self.detector.vehicle_classes.values())
+        self.assertGreater(self.detector.confidence_threshold, 0)
+    
+    def test_vehicle_detection(self):
+        """Test vehicle detection on sample frame"""
+        # Create a test frame (640x480 black image)
+        test_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        
+        detections = self.detector.detect_vehicles(test_frame)
+        self.assertIsInstance(detections, list)
+    
+    def test_detection_format(self):
+        """Test detection result format"""
+        test_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        detections = self.detector.detect_vehicles(test_frame)
+        
+        for detection in detections:
+            self.assertIn('bbox', detection)
+            self.assertIn('confidence', detection)
+            self.assertIn('label', detection)
+            
+            # Check bbox format
+            bbox = detection['bbox']
+            self.assertEqual(len(bbox), 4)
+            self.assertTrue(all(isinstance(coord, int) for coord in bbox))
+            
+            # Check confidence range
+            confidence = detection['confidence']
+            self.assertGreaterEqual(confidence, 0)
+            self.assertLessEqual(confidence, 1)
+
+class TestTrafficOptimizer(unittest.TestCase):
+    def setUp(self):
+        self.optimizer = TrafficOptimizer()
+    
+    def test_optimizer_initialization(self):
+        """Test optimizer initialization"""
+        self.assertIsNotNone(self.optimizer.model)
+        self.assertIsInstance(self.optimizer.traffic_history, type(self.optimizer.traffic_history))
+    
+    def test_green_time_calculation(self):
+        """Test green time calculation"""
+        vehicle_count = 10
+        video_length = 20.0
+        lane_priority = 1
+        
+        green_time = self.optimizer.calculate_optimal_green_time(
+            vehicle_count, video_length, lane_priority
+        )
+        
+        self.assertIsInstance(green_time, float)
+        self.assertGreaterEqual(green_time, self.optimizer.model['min_green_time'])
+        self.assertLessEqual(green_time, self.optimizer.model['max_green_time'])
+    
+    def test_traffic_data_recording(self):
+        """Test traffic data recording"""
+        lane_data = {
+            'lane_id': 'north',
+            'vehicle_count': 15,
+            'green_time': 10.0,
+            'efficiency': 0.8
+        }
+        
+        initial_count = len(self.optimizer.traffic_history)
+        self.optimizer.record_traffic_data(lane_data)
+        
+        self.assertEqual(len(self.optimizer.traffic_history), initial_count + 1)
+        
+        # Check recorded data
+        recorded = self.optimizer.traffic_history[-1]
+        self.assertEqual(recorded['lane_id'], 'north')
+        self.assertEqual(recorded['vehicle_count'], 15)
+
+class TestSystemIntegration(unittest.TestCase):
+    def test_lane_system_structure(self):
+        """Test lane system data structure"""
+        from coordinated_traffic_app import lanes_system
+        
+        expected_lanes = ['north', 'east', 'south', 'west']
+        self.assertEqual(set(lanes_system.keys()), set(expected_lanes))
+        
+        for lane_name, lane_data in lanes_system.items():
+            required_keys = [
+                'video_path', 'cap', 'detector', 'current_frame',
+                'frame_count', 'vehicle_count', 'traffic_density',
+                'signal_state', 'is_active', 'is_running'
+            ]
+            
+            for key in required_keys:
+                self.assertIn(key, lane_data)
+    
+    def test_coordinator_structure(self):
+        """Test coordinator data structure"""
+        from coordinated_traffic_app import coordinator
+        
+        required_keys = [
+            'active_lane', 'green_timer', 'cycle_count',
+            'ml_enabled', 'ml_accuracy', 'is_running'
+        ]
+        
+        for key in required_keys:
+            self.assertIn(key, coordinator)
+
+if __name__ == '__main__':
+    # Run tests
+    unittest.main(verbosity=2)
+
+=========================================================
+END OF CODE DOCUMENTATION
+=========================================================
+
+This file contains comprehensive code examples for your Smart Traffic Control System.
+Use these snippets in your documentation to illustrate system architecture,
+implementation details, and usage examples.
+
+Key sections included:
+1. System architecture and configuration
+2. Vehicle detection with YOLO
+3. Traffic optimization algorithms
+4. Video processing pipeline
+5. Traffic coordination logic
+6. Web API endpoints
+7. Frontend JavaScript
+8. Configuration management
+9. Error handling
+10. Unit testing
+
+Each section is ready to copy-paste into your documentation with proper formatting.

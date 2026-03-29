@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Lane Traffic Control System</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
+            min-height: 100vh;
+        }
+        .header {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 20px;
+            text-align: center;
+            backdrop-filter: blur(10px);
+        }
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .control-panel {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        .upload-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .upload-section {
+            text-align: center;
+        }
+        .upload-section h3 {
+            margin-bottom: 10px;
+            color: #fff;
+        }
+        .file-input {
+            position: relative;
+            display: inline-block;
+        }
+        .file-input input {
+            position: absolute;
+            left: -9999px;
+        }
+        .file-label {
+            background: #4CAF50;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background 0.3s;
+            font-size: 14px;
+        }
+        .file-label:hover {
+            background: #45a049;
+        }
+        .file-status {
+            margin-top: 8px;
+            padding: 5px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 5px;
+            font-size: 12px;
+            min-height: 20px;
+        }
+        .master-controls {
+            text-align: center;
+            margin-top: 20px;
+        }
+        .button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.3s;
+            margin: 0 5px;
+        }
+        .button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .btn-start { background: #4CAF50; color: white; }
+        .btn-stop { background: #f44336; color: white; }
+        .btn-reset { background: #ff9800; color: white; }
+        
+        .lanes-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            grid-template-rows: repeat(2, 1fr);
+            gap: 20px;
+            height: 80vh;
+        }
+        
+        .lane-section {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 15px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .lane-header {
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        .lane-title {
+            font-size: 1.3em;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        
+        .lane-content {
+            display: flex;
+            flex: 1;
+            gap: 15px;
+        }
+        
+        .video-container {
+            flex: 2;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .video-canvas {
+            width: 100%;
+            height: auto;
+            border-radius: 10px;
+            background: #000;
+            margin-bottom: 10px;
+        }
+        
+        .video-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            font-size: 12px;
+        }
+        
+        .stat-item {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 8px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        
+        .signal-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        
+        .traffic-light {
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .light {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: 2px solid #333;
+            margin: 8px auto;
+        }
+        .light.red { background: #ff0000; box-shadow: 0 0 20px #ff0000; }
+        .light.yellow { background: #ffff00; box-shadow: 0 0 20px #ffff00; }
+        .light.green { background: #00ff00; box-shadow: 0 0 20px #00ff00; }
+        .light.inactive { background: #333; box-shadow: none; }
+        
+        .signal-info {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 5px;
+            padding: 10px;
+            text-align: center;
+            width: 100%;
+        }
+        
+        .timer {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #00ff00;
+            margin-bottom: 5px;
+        }
+        
+        .density {
+            font-size: 1.1em;
+            margin-bottom: 5px;
+        }
+        
+        .vehicle-count {
+            font-size: 1em;
+        }
+        
+        .ambulance-alert {
+            background: #ff0000;
+            color: white;
+            padding: 5px;
+            border-radius: 5px;
+            margin-top: 5px;
+            text-align: center;
+            font-weight: bold;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚦 Multi-Lane Traffic Control System</h1>
+        <p>Independent Analysis for Four Traffic Intersections</p>
+    </div>
+
+    <div class="container">
+        <!-- Control Panel -->
+        <div class="control-panel">
+            <div class="upload-grid">
+                <!-- North Upload -->
+                <div class="upload-section">
+                    <h3>🔴 North Lane</h3>
+                    <div class="file-input">
+                        <input type="file" id="northVideo" accept="video/*">
+                        <label for="northVideo" class="file-label">📁 Browse</label>
+                    </div>
+                    <div class="file-status" id="northStatus">No file</div>
+                </div>
+                
+                <!-- East Upload -->
+                <div class="upload-section">
+                    <h3>🟢 East Lane</h3>
+                    <div class="file-input">
+                        <input type="file" id="eastVideo" accept="video/*">
+                        <label for="eastVideo" class="file-label">📁 Browse</label>
+                    </div>
+                    <div class="file-status" id="eastStatus">No file</div>
+                </div>
+                
+                <!-- South Upload -->
+                <div class="upload-section">
+                    <h3>🔵 South Lane</h3>
+                    <div class="file-input">
+                        <input type="file" id="southVideo" accept="video/*">
+                        <label for="southVideo" class="file-label">📁 Browse</label>
+                    </div>
+                    <div class="file-status" id="southStatus">No file</div>
+                </div>
+                
+                <!-- West Upload -->
+                <div class="upload-section">
+                    <h3>🟡 West Lane</h3>
+                    <div class="file-input">
+                        <input type="file" id="westVideo" accept="video/*">
+                        <label for="westVideo" class="file-label">📁 Browse</label>
+                    </div>
+                    <div class="file-status" id="westStatus">No file</div>
+                </div>
+            </div>
+            
+            <div class="master-controls">
+                <button class="button btn-start" id="startAllBtn">▶️ Start All</button>
+                <button class="button btn-stop" id="stopAllBtn" disabled>⏹️ Stop All</button>
+                <button class="button btn-reset" id="resetAllBtn">🔄 Reset All</button>
+            </div>
+        </div>
+
+        <!-- Lanes Grid -->
+        <div class="lanes-grid">
+            <!-- North Lane -->
+            <div class="lane-section">
+                <div class="lane-header">
+                    <div class="lane-title">🔴 North Lane</div>
+                </div>
+                <div class="lane-content">
+                    <div class="video-container">
+                        <canvas id="northCanvas" class="video-canvas" width="320" height="240"></canvas>
+                        <div class="video-stats">
+                            <div class="stat-item">
+                                <strong>FPS:</strong> <span id="northFps">0.0</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong>Frame:</strong> <span id="northFrame">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong>Total:</strong> <span id="northTotal">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong>Cars:</strong> <span id="northCars">0</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="signal-container">
+                        <div class="traffic-light">
+                            <div class="light red" id="north-red"></div>
+                            <div class="light yellow inactive" id="north-yellow"></div>
+                            <div class="light green inactive" id="north-green"></div>
+                        </div>
+                        <div class="signal-info">
+                            <div class="timer" id="northTimer">00:00</div>
+                            <div class="density">Density: <span id="northDensity">Low</span></div>
+                            <div class="vehicle-count">Vehicles: <span id="northVehicles">0</span></div>
+                            <div class="ambulance-alert" id="northAmbulance">🚑 AMBULANCE</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- East Lane -->
+            <div class="lane-section">
+                <div class="lane-header">
+                    <div class="lane-title">🟢 East Lane</div>
+                </div>
+                <div class="lane-content">
+                    <div class="video-container">
+                        <canvas id="eastCanvas" class="video-canvas" width="320" height="240"></canvas>
+                        <div class="video-stats">
+                            <div class="stat-item">
+                                <strong>FPS:</strong> <span id="eastFps">0.0</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong>Frame:</strong> <span id="eastFrame">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong>Total:</strong> <span id="eastTotal">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong>Cars:</strong> <span id="eastCars">0</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="signal-container">
+                        <div class="traffic-light">
+                            <div class="light red" id="east-red"></div>
+                            <div class="light yellow inactive" id="east-yellow"></div>
+                            <div class="light green inactive" id="east-green"></div>
+                        </div>
+                        <div class="signal-info">
+                            <div class="timer" id="eastTimer">00:00</div>
+                            <div class="density">Density: <span id="eastDensity">Low</span></div>
+                            <div class="vehicle-count">Vehicles: <span id="eastVehicles">0</span></div>
+                            <div class="ambulance-alert" id="eastAmbulance">🚑 AMBULANCE</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- South Lane -->
+            <div class="lane-section">
+                <div class="lane-header">
+                    <div class="lane-title">🔵 South Lane</div>
+                </div>
+                <div class="lane-content">
+                    <div class="video-container">
+                        <canvas id="southCanvas" class="video-canvas" width="320" height="240"></canvas>
+                        <div class="video-stats">
+                            <div class="stat-item">
+                                <strong>FPS:</strong> <span id="southFps">0.0</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong>Frame:</strong> <span id="southFrame">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong>Total:</strong> <span id="southTotal">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong>Cars:</strong> <span id="southCars">0</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="signal-container">
+                        <div class="traffic-light">
+                            <div class="light red" id="south-red"></div>
+                            <div class="light yellow inactive" id="south-yellow"></div>
+                            <div class="light green inactive" id="south-green"></div>
+                        </div>
+                        <div class="signal-info">
+                            <div class="timer" id="southTimer">00:00</div>
+                            <div class="density">Density: <span id="southDensity">Low</span></div>
+                            <div class="vehicle-count">Vehicles: <span id="southVehicles">0</span></div>
+                            <div class="ambulance-alert" id="southAmbulance">🚑 AMBULANCE</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- West Lane -->
+            <div class="lane-section">
+                <div class="lane-header">
+                    <div class="lane-title">🟡 West Lane</div>
+                </div>
+                <div class="lane-content">
+                    <div class="video-container">
+                        <canvas id="westCanvas" class="video-canvas" width="320" height="240"></canvas>
+                        <div class="video-stats">
+                            <div class="stat-item">
+                                <strong>FPS:</strong> <span id="westFps">0.0</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong>Frame:</strong> <span id="westFrame">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong>Total:</strong> <span id="westTotal">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <strong>Cars:</strong> <span id="westCars">0</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="signal-container">
+                        <div class="traffic-light">
+                            <div class="light red" id="west-red"></div>
+                            <div class="light yellow inactive" id="west-yellow"></div>
+                            <div class="light green inactive" id="west-green"></div>
+                        </div>
+                        <div class="signal-info">
+                            <div class="timer" id="westTimer">00:00</div>
+                            <div class="density">Density: <span id="westDensity">Low</span></div>
+                            <div class="vehicle-count">Vehicles: <span id="westVehicles">0</span></div>
+                            <div class="ambulance-alert" id="westAmbulance">🚑 AMBULANCE</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Lane data structure
+        const lanes = ['north', 'east', 'south', 'west'];
+        let isRunning = false;
+        let updateInterval = null;
+        
+        // Lane data storage
+        const laneData = {
+            north: { videoPath: null, isRunning: false },
+            east: { videoPath: null, isRunning: false },
+            south: { videoPath: null, isRunning: false },
+            west: { videoPath: null, isRunning: false }
+        };
+
+        // Initialize file upload handlers
+        lanes.forEach(lane => {
+            const videoInput = document.getElementById(`${lane}Video`);
+            const statusDiv = document.getElementById(`${lane}Status`);
+            
+            videoInput.addEventListener('change', async function(e) {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                const formData = new FormData();
+                formData.append('video', file);
+                formData.append('lane', lane);
+
+                try {
+                    statusDiv.textContent = 'Uploading...';
+                    statusDiv.style.color = '#ffff00';
+                    
+                    const response = await fetch('/upload_multi_video', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        laneData[lane].videoPath = result.filename;
+                        statusDiv.textContent = `✅ ${result.filename}`;
+                        statusDiv.style.color = '#4CAF50';
+                    } else {
+                        statusDiv.textContent = `❌ ${result.message}`;
+                        statusDiv.style.color = '#f44336';
+                    }
+                } catch (error) {
+                    statusDiv.textContent = `❌ Upload failed`;
+                    statusDiv.style.color = '#f44336';
+                }
+            });
+        });
+
+        // Master control handlers
+        document.getElementById('startAllBtn').addEventListener('click', async function() {
+            try {
+                const response = await fetch('/start_multi_analysis', { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.success) {
+                    isRunning = true;
+                    document.getElementById('startAllBtn').disabled = true;
+                    document.getElementById('stopAllBtn').disabled = false;
+                    startUpdating();
+                } else {
+                    alert(`Start failed: ${result.message}`);
+                }
+            } catch (error) {
+                alert(`Start failed: ${error.message}`);
+            }
+        });
+
+        document.getElementById('stopAllBtn').addEventListener('click', async function() {
+            try {
+                const response = await fetch('/stop_multi_analysis', { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.success) {
+                    isRunning = false;
+                    document.getElementById('startAllBtn').disabled = false;
+                    document.getElementById('stopAllBtn').disabled = true;
+                    stopUpdating();
+                }
+            } catch (error) {
+                alert(`Stop failed: ${error.message}`);
+            }
+        });
+
+        document.getElementById('resetAllBtn').addEventListener('click', async function() {
+            try {
+                const response = await fetch('/reset_multi_analysis', { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.success) {
+                    isRunning = false;
+                    document.getElementById('startAllBtn').disabled = true;
+                    document.getElementById('stopAllBtn').disabled = true;
+                    stopUpdating();
+                    resetAllDisplays();
+                    
+                    // Reset file inputs and statuses
+                    lanes.forEach(lane => {
+                        document.getElementById(`${lane}Video`).value = '';
+                        document.getElementById(`${lane}Status`).textContent = 'No file';
+                        document.getElementById(`${lane}Status`).style.color = '';
+                        laneData[lane].videoPath = null;
+                    });
+                }
+            } catch (error) {
+                alert(`Reset failed: ${error.message}`);
+            }
+        });
+
+        // Start updating
+        function startUpdating() {
+            updateInterval = setInterval(updateAllFrames, 200);
+        }
+
+        // Stop updating
+        function stopUpdating() {
+            if (updateInterval) {
+                clearInterval(updateInterval);
+                updateInterval = null;
+            }
+        }
+
+        // Update all frames
+        async function updateAllFrames() {
+            try {
+                const response = await fetch('/get_multi_frames');
+                const data = await response.json();
+                
+                if (data.success) {
+                    lanes.forEach(lane => {
+                        const laneInfo = data.lanes[lane];
+                        if (laneInfo) {
+                            updateLaneDisplay(lane, laneInfo);
+                        }
+                    });
+                }
+            } catch (error) {
+                console.error('Update error:', error);
+            }
+        }
+
+        // Update individual lane display
+        function updateLaneDisplay(lane, data) {
+            // Update canvas
+            if (data.frame) {
+                const canvas = document.getElementById(`${lane}Canvas`);
+                const ctx = canvas.getContext('2d');
+                const img = new Image();
+                img.onload = function() {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                };
+                img.src = 'data:image/jpeg;base64,' + data.frame;
+            }
+            
+            // Update stats
+            document.getElementById(`${lane}Fps`).textContent = data.fps || '0.0';
+            document.getElementById(`${lane}Frame`).textContent = data.frame_count || '0';
+            document.getElementById(`${lane}Total`).textContent = data.total_vehicles || '0';
+            document.getElementById(`${lane}Cars`).textContent = data.vehicle_count || '0';
+            document.getElementById(`${lane}Vehicles`).textContent = data.vehicle_count || '0';
+            
+            // Update timer
+            if (data.countdown !== undefined) {
+                const minutes = Math.floor(data.countdown / 60);
+                const seconds = data.countdown % 60;
+                document.getElementById(`${lane}Timer`).textContent = 
+                    `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            }
+            
+            // Update density
+            const density = getDensityLevel(data.vehicle_count || 0);
+            document.getElementById(`${lane}Density`).textContent = density;
+            
+            // Update traffic lights
+            if (data.signal_state) {
+                updateLaneLights(lane, data.signal_state);
+            }
+            
+            // Show ambulance alert if needed
+            const ambulanceAlert = document.getElementById(`${lane}Ambulance`);
+            if (data.ambulance_detected) {
+                ambulanceAlert.style.display = 'block';
+            } else {
+                ambulanceAlert.style.display = 'none';
+            }
+        }
+
+        // Update lane traffic lights
+        function updateLaneLights(lane, state) {
+            const colors = ['red', 'yellow', 'green'];
+            colors.forEach(color => {
+                const light = document.getElementById(`${lane}-${color}`);
+                if (state === color) {
+                    light.classList.remove('inactive');
+                } else {
+                    light.classList.add('inactive');
+                }
+            });
+        }
+
+        // Get density level
+        function getDensityLevel(count) {
+            if (count <= 2) return 'Low';
+            if (count <= 5) return 'Medium';
+            if (count <= 10) return 'High';
+            return 'Critical';
+        }
+
+        // Reset all displays
+        function resetAllDisplays() {
+            lanes.forEach(lane => {
+                // Clear canvas
+                const canvas = document.getElementById(`${lane}Canvas`);
+                const ctx = canvas.getContext('2d');
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                // Reset stats
+                document.getElementById(`${lane}Fps`).textContent = '0.0';
+                document.getElementById(`${lane}Frame`).textContent = '0';
+                document.getElementById(`${lane}Total`).textContent = '0';
+                document.getElementById(`${lane}Cars`).textContent = '0';
+                document.getElementById(`${lane}Vehicles`).textContent = '0';
+                document.getElementById(`${lane}Timer`).textContent = '00:00';
+                document.getElementById(`${lane}Density`).textContent = 'Low';
+                document.getElementById(`${lane}Ambulance`).style.display = 'none';
+                
+                // Reset lights to red
+                updateLaneLights(lane, 'red');
+            });
+        }
+    </script>
+</body>
+</html>
